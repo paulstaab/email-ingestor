@@ -123,7 +123,9 @@ impl Imap {
             }
             if line.to_ascii_uppercase().starts_with("* CAPABILITY ") {
                 for capability in line.split_ascii_whitespace().skip(2) {
-                    move_supported |= capability.eq_ignore_ascii_case("MOVE");
+                    // MOVE is part of the IMAP4rev2 base protocol.
+                    move_supported |= capability.eq_ignore_ascii_case("MOVE")
+                        || capability.eq_ignore_ascii_case("IMAP4REV2");
                     self.idle |= capability.eq_ignore_ascii_case("IDLE");
                     self.utf8_mailboxes |= capability.eq_ignore_ascii_case("IMAP4REV2")
                         || capability.eq_ignore_ascii_case("UTF8=ONLY");
