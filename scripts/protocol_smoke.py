@@ -35,6 +35,9 @@ class Scenario:
         self.imap_setups = 0
         self.smtp_setups = 0
         self.fetch_attempts = 0
+        self.incomplete_commands = 0
+        self.data_terminators = 0
+        self.aborted_data = []
         self.generation = 42
         self.blocked = threading.Event()
         self.errors = []
@@ -116,8 +119,11 @@ class Scenario:
                             uid += 10
                         io.write(f"* 1 FETCH (UID {uid} BODY[]<{offset}> {{{len(data)}}}\r\n".encode())
                         io.write(data)
-                        if self.mode == "incomplete_command" and offset > 0:
-                            # The zero-length EOF probe still needs a successful tagged completion.
+                        if self.mode == "incomplete_command" and offset > 0 and self.incomplete_commands == 0:
+                            # Fail the first EOF probe after its literal, before tagged completion.
+                            # The retry must retrieve from byte zero and complete normally.
+                            assert offset == self.size and not data
+                            self.incomplete_commands += 1
                             io.write(b")\r\n")
                             return
                         io.write(f")\r\n{tag} OK body\r\n".encode())
@@ -180,8 +186,12 @@ class Scenario:
                     while True:
                         body = io.readline(2048)
                         if not body:
+                            with self.lock:
+                                self.aborted_data.append((count, digest.hexdigest()))
                             return  # incomplete transaction is never a receipt
                         if body == b".\r\n":
+                            with self.lock:
+                                self.data_terminators += 1
                             break
                         assert len(body) <= 1001 and body.endswith(b"\r\n")
                         if body.startswith(b".."):
@@ -320,6 +330,14 @@ def exercise(args, directory, tls, mode):
                 assert len(scenario.receipts) == (2 if mode in {"lost_acceptance", "duplicate_content", "generation_change", "restart_after_acceptance"} else 1)
                 if mode == "retry_move":
                     assert scenario.move_attempts == 2
+                if mode == "incomplete_command":
+                    assert scenario.incomplete_commands == 1, "EOF completion fault was not injected"
+                    assert scenario.fetch_attempts == 2, "incomplete retrieval was not retried"
+                    assert scenario.aborted_data == [(scenario.size, scenario.expected_digest())], "failed retrieval must close DATA after original bytes without a terminator"
+                    assert scenario.data_terminators == 1, "only the complete retry may finalize DATA"
+                    offsets = [int(re.search(r"<(\d+)\.\d+>", command).group(1)) for command in scenario.commands if "BODY.PEEK[]" in command]
+                    assert offsets == [0, scenario.size, 0, scenario.size], "retry did not refetch from byte zero"
+                    assert scenario.move_attempts == 1
             if mode == "large":
                 assert peak_kib < 512 * 1024, f"RSS exceeded container target: {peak_kib} KiB"
             print(f"PASS {mode}" + (f" (peak RSS {peak_kib} KiB)" if not args.image else ""), flush=True)
@@ -350,7 +368,7 @@ def main():
         subprocess.run(["openssl", "x509", "-req", "-in", str(directory / "server.csr"), "-CA", str(directory / "ca.pem"), "-CAkey", str(directory / "ca.key"), "-CAcreateserial", "-out", str(directory / "server.pem"), "-days", "2", "-extfile", str(directory / "extensions")], check=True, **quiet)
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(directory / "server.pem", directory / "server.key")
-        modes = ["normal", "duplicate_content", "oversized", "wrong_uid", "inaccurate_size", "permanent_rejection", "invalid_tls", "lost_acceptance", "retry_move", "lost_move_reply"]
+        modes = ["normal", "duplicate_content", "oversized", "wrong_uid", "inaccurate_size", "permanent_rejection", "invalid_tls", "incomplete_command", "lost_acceptance", "retry_move", "lost_move_reply"]
         modes.append("generation_change")
         if not args.image:
             modes.append("restart_after_acceptance")
