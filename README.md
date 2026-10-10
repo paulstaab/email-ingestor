@@ -4,7 +4,29 @@ A small Rust service that forwards original messages from a public IMAP inbox to
 
 After final SMTP acceptance, the ingestor immediately moves the message to a configured upstream folder, normally the provider's Trash. Source-folder membership is the only durable processing state. No database or persistent volume is needed. Messages up to 250 MiB are streamed through bounded buffers without loading the complete message into memory. IMAP IDLE provides fast discovery when available, with polling and periodic reconciliation. Stalwart owns subsequent Sieve/spam processing; final mailbox verification is outside this project.
 
-**Status:** architecture and scope only. The Rust application, container image, and GitHub Actions workflows will be implemented later. The deployment and configuration below describe the planned interface.
+**Status:** the Rust runtime, deterministic tests, disposable TLS peer tests, Dockerfile, and CI/GHCR workflow definitions are implemented. This is a development build, not a validated release. Real IMAP/Stalwart interoperability, selected-provider conformance, container execution, and the 24h soak remain release gates; see [implementation status](docs/implementation.md). No published image is assumed.
+
+## Development
+
+Use the pinned Rust 1.99.0 toolchain (including rustfmt and Clippy). The devcontainer installs it automatically. Dependencies and the lockfile are pinned; update them together after checking compatibility.
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+python3 scripts/check_docs.py
+cargo build --locked --release
+python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --large --thresholds
+```
+
+The Python harness requires Python 3 and OpenSSL. It creates temporary test certificates, runs disposable authenticated implicit-TLS peers, independently checks raw-byte SHA-256 digests and acceptance, and inspects process exits and logs. No live mail credentials are used. Large fixtures are generated in bounded chunks. To check the non-root container with a read-only root:
+
+```sh
+docker build -t email-ingestor:local .
+python3 scripts/protocol_smoke.py --image email-ingestor:local
+```
+
+CI checks branches and PRs without publishing. Main checks gate a separate job that builds, smoke-tests, and pushes the same local image. Configure branch protection and GHCR access separately. Publication does not deploy the service.
 
 ## Deployment
 
@@ -30,14 +52,14 @@ Run one instance per upstream account on the private server. V1 targets one prov
 
    ```sh
    chmod 600 /etc/email-ingestor.env
-   docker pull ghcr.io/paulstaab/email-ingestor:latest
+   docker pull ghcr.io/paulstaab/email-ingestor:beta
    docker run -d --name email-ingestor --restart no \
      --network mail --read-only --cap-drop ALL --memory 512m \
      --env-file /etc/email-ingestor.env \
-     ghcr.io/paulstaab/email-ingestor:latest
+     ghcr.io/paulstaab/email-ingestor:beta
    ```
 
-The container runs as non-root and exposes no ports. Optional secret/CA file variables require read-only mounts at their container paths. Use an image digest or `sha-<full-commit-sha>` tag for a specific release; private GHCR packages require login. To update configuration or the image, stop/remove the old container before starting its replacement.
+The container runs as non-root and exposes no ports. Optional secret/CA file variables require read-only mounts at their container paths. Use an image digest to pin a specific build; private GHCR packages require login. To update configuration or the image, stop/remove the old container before starting its replacement.
 
 ## Configuration
 
@@ -77,6 +99,6 @@ Monitor exit status and structured logs. The example leaves failures stopped and
 
 Use short-lived branches and reviewed PRs into protected `main`. Planned CI checks Rust formatting, Clippy, locked tests, protocol/container integration, and documentation/configuration consistency. Branch/PR image builds are smoke-tested without publishing.
 
-After a successful merge and main validation, one main-only job builds, smoke-tests, and publishes that same image directly to [GitHub Container Registry](https://github.com/paulstaab/email-ingestor/pkgs/container/email-ingestor). Releases have a commit tag, digest, and `latest`; host deployment remains operator-managed. Workflow files are deferred to implementation; see the [workflow design](docs/tech-stack.md#5-github-actions-and-branch-workflow).
+After a successful merge and main validation, one main-only job builds, smoke-tests, and publishes that same image directly to [GitHub Container Registry](https://github.com/paulstaab/email-ingestor/pkgs/container/email-ingestor). During testing, only `:beta` is published, with a recorded digest and OCI revision; `:latest` will be enabled after testing; host deployment remains operator-managed. Workflow definitions are present; validation on GitHub and the release gates remain outstanding; see the [workflow design](docs/tech-stack.md#5-github-actions-and-branch-workflow).
 
-See [architecture](docs/architecture.md), [requirements](docs/requirements.md), [planned tests](docs/test-cases.md), and [technology stack](docs/tech-stack.md).
+See [architecture](docs/architecture.md), [requirements](docs/requirements.md), [acceptance test plan](docs/test-cases.md), and [technology stack](docs/tech-stack.md).

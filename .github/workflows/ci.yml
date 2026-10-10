@@ -1,0 +1,36 @@
+name: CI
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust and developer tools
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: python3 scripts/check_docs.py
+      - run: cargo build --locked --release
+      - name: TLS protocol faults and 250 MiB streaming
+        run: python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --large --thresholds
+  image:
+    needs: checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image without publication
+        run: docker build --platform linux/amd64 -t email-ingestor:check .
+      - name: Read-only non-root container TLS smoke
+        run: python3 scripts/protocol_smoke.py --image email-ingestor:check
