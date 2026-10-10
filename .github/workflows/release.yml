@@ -1,0 +1,57 @@
+name: Release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: main-release
+  cancel-in-progress: false
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+  publish:
+    if: github.repository == 'paulstaab/email-ingestor' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/paulstaab/email-ingestor
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build the exact merged-SHA image once
+        run: |
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            -t "${IMAGE}:beta" .
+      - name: Smoke-test the same local image before login
+        run: python3 scripts/protocol_smoke.py --image "${IMAGE}:beta"
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish beta only for current main and record digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          current=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            printf 'Main advanced; beta publication skipped.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker push "${IMAGE}:beta" | tee /tmp/ingestor-push.log
+          digest=$(sed -n 's/.*digest: \(sha256:[a-f0-9]*\).*/\1/p' /tmp/ingestor-push.log | tail -1)
+          test -n "$digest"
+          printf 'Image: `%s:beta`\nDigest: `%s@%s`\nRevision: `%s`\n' "$IMAGE" "$IMAGE" "$digest" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove registry credentials
+        if: always()
+        run: docker logout ghcr.io
