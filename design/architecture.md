@@ -1,6 +1,6 @@
 # Email Ingestor: context and architecture
 
-Status: agreed v1 scope, updated 10 October 2026; core runtime is implemented, with release validation tracked in [implementation status](implementation.md). See [requirements](requirements.md), [test cases](test-cases.md), and [technology stack](tech-stack.md).
+Status: agreed v1 scope, updated 10 October 2026; implementation is planned. See [requirements](requirements.md), [test cases](test-cases.md), and [technology stack](tech-stack.md).
 
 ## 1. Context and boundary
 
@@ -154,4 +154,4 @@ No HTTP server, health/readiness endpoint, metrics exporter, listener, or persis
 
 The deployment example leaves a failed container stopped. Optional external restart/backoff resumes work after correction or transient recovery; repeated restarts reset thresholds and can generate repeated duplicates. Source preservation and a visible failure are the response to an unresolvable message, rather than silently skipping it.
 
-Branch/PR CI checks code, protocol recovery, container behavior, and docs with read-only permissions and no publication. Following a merge, main checks gate one main-only job that builds, smoke-tests, and directly publishes the same image for that merged SHA to GHCR. There is no image artifact handoff between jobs. Publish only `:beta` for current main and record its digest and OCI revision. Enable `:latest` after testing; SHA image tags are not used. Publishing does not redeploy the private host. Workflow definitions and the core application are implemented; provider, real-server, container, and soak validation remain outstanding; see [stack and workflow design](tech-stack.md#5-github-actions-and-branch-workflow).
+Branch/PR CI checks code, protocol recovery, container behavior, and docs with read-only permissions and no publication. Following a merge, main checks gate one main-only job that builds, smoke-tests, and directly publishes the same image for that merged SHA to GHCR. There is no image artifact handoff between jobs. Use a commit-specific tag and digest; update `latest` only for current main. Publishing does not redeploy the private host. Workflow files and the application remain deferred; see [stack and workflow design](tech-stack.md#5-github-actions-and-branch-workflow).

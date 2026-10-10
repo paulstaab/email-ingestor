@@ -1,6 +1,6 @@
 # Email Ingestor: automatable test plan
 
-Status: acceptance plan with partial automated coverage. See [implementation status](implementation.md) for executed checks and outstanding scenarios; a planned row does not imply a passing test. IDs link to [requirements](requirements.md); use the [architecture](architecture.md) and [stack](tech-stack.md) for the contract. The plan covers one acceptance-then-move path and the fixed operational defaults.
+Status: tests to implement later, not executed application tests. IDs link to [requirements](requirements.md); use the [architecture](architecture.md) and [stack](tech-stack.md) for the contract. The plan covers one acceptance-then-move path and the fixed operational defaults.
 
 ## 1. Test harness
 
@@ -78,10 +78,10 @@ Each crash/fault fixture must prove: unaccepted available source messages remain
 | TC-39 | Interoperability | Disposable real IMAP and pinned Stalwart with Sieve fileinto/discard; record versions and commands. | Authenticated original-byte SMTP pipeline works; acceptance alone authorizes move even on discard; runtime makes no final-mailbox query. | FR-02, FR-07, FR-09, FR-10, NFR-12 |
 | TC-40 | Provider conformance | Dedicated selected-provider test account: TLS/auth, native MOVE, explicit target path/permissions, UID stability, PEEK, IDLE or polling. | Record one validated provider/version/capability profile; contract holds without keyword/special-use dependency; unsupported prerequisites fail safely. | FR-02, FR-04, FR-05, FR-11, FR-16, NFR-12 |
 | TC-41 | Soak/model | 24h arrivals/outages/crashes, source/target move windows, missed IDLE, polling, and supervisor restarts after faults resolve. | Every available source fixture eventually accepted; no pre-acceptance move or purge; duplicates permitted; bounded resources and independent peer evidence. | NFR-01, NFR-02, NFR-07, NFR-14 |
-| TC-42 | Workflow | Branch push and ordinary/fork PR; inject format/lint/test/integration/docs/image-smoke failures. | Required checks fail appropriately; branch protection blocks failing merges when configured; no registry publication or production credentials. | FR-20, NFR-14, NFR-15 |
-| TC-43 | Workflow | Successful merge/main validation; inspect publication job image ID, smoke result, OCI revision, tags, digest, and job steps. | One job builds/smokes/pushes same merged-SHA image directly; no artifact handoff/rebuild; correct GHCR namespace, only the beta tag, OCI revision, and traceable digest; no latest or SHA image tags. | FR-21, NFR-15 |
-| TC-44 | Workflow | Failed main checks, failed build/smoke, registry push failure, and delayed successful run after main advances. | Checks/build/smoke failure prevents push; push failure visible; obsolete run cannot replace beta; no host deployment. | FR-21, NFR-15 |
-| TC-45 | Workflow/docs | Compare env table/parser/default constants/examples/test references; inspect action triggers, permissions, secret handling, and commit pins. | Reduced interface consistent, all requirements mapped; package-write/login only in main publication job; docs accurately describe workflow definitions and unexecuted release validation. | FR-01, FR-20, FR-21, NFR-05, NFR-12, NFR-13, NFR-15 |
+| TC-42 | Workflow | Branch push and ordinary/fork PR; inject format/lint/test/integration/design/image-smoke failures. | Required checks fail appropriately; branch protection blocks failing merges when configured; no registry publication or production credentials. | FR-20, NFR-14, NFR-15 |
+| TC-43 | Workflow | Successful merge/main validation; inspect publication job image ID, smoke result, OCI revision, tags, digest, and job steps. | One job builds/smokes/pushes same merged-SHA image directly; no artifact handoff/rebuild; correct GHCR namespace and traceable digest. | FR-21, NFR-15 |
+| TC-44 | Workflow | Failed main checks, failed build/smoke, registry push failure, and delayed successful run after main advances. | Checks/build/smoke failure prevents push; push failure visible; obsolete run cannot replace latest; no host deployment. | FR-21, NFR-15 |
+| TC-45 | Workflow/docs | Compare env table/parser/default constants/examples/test references; inspect action triggers, permissions, secret handling, and commit pins. | Reduced interface consistent, all requirements mapped; package-write/login only in main publication job; docs accurately describe deferred workflow implementation. | FR-01, FR-20, FR-21, NFR-05, NFR-12, NFR-13, NFR-15 |
 
 ## 8. Large-message streaming
 
@@ -96,4 +96,4 @@ Each crash/fault fixture must prove: unaccepted available source messages remain
 
 Run policy/configuration, deterministic protocol/fault, process, and disposable real-server checks on branches/PRs and merged main. Build/smoke branch images without pushing; after successful main checks, build/smoke/push in one publication job. Provider conformance uses a dedicated account outside untrusted PR CI; the 24h soak is scheduled/manual for release candidates.
 
-Release gates are correct final acceptance, at-least-once recovery, exact native movement, no ingestor purge, visible fatal/fifth-failure termination, and the selected provider's conformance. The full plan remains the release contract. Existing automated checks cover a subset and do not establish provider/Stalwart conformance or completion of the soak.
+Release gates are correct final acceptance, at-least-once recovery, exact native movement, no ingestor purge, visible fatal/fifth-failure termination, and the selected provider's conformance. These are future application tests; checks on this document set do not establish runtime correctness.
