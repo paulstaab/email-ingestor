@@ -1,6 +1,6 @@
 # Email Ingestor: requirements
 
-Status: agreed v1 scope; implementation and automated tests are planned. Requirements supersede the original draft where later decisions changed it. See [architecture](architecture.md), [stack](tech-stack.md), and [test plan](test-cases.md).
+Status: agreed v1 scope; core implementation and automated tests exist. Outstanding validation is tracked in [implementation status](implementation.md). Requirements supersede the original draft where later decisions changed it. See [architecture](architecture.md), [stack](tech-stack.md), and [test plan](test-cases.md).
 
 ## 1. Functional requirements
 
@@ -25,8 +25,8 @@ Status: agreed v1 scope; implementation and automated tests are planned. Require
 | FR-17 | Emit sanitized structured logs and propagate terminal failure to container exit. Include discovery method, scoped UID/stage/attempt, acceptance/move events, streak/reset information, and terminal reason. No HTTP/metrics endpoints or listening ports. |
 | FR-18 | On controlled shutdown, stop new work, use the fixed completion budget, and safely cancel/dispose of uncertain operations. Exit `0` normally; a fatal result stays `1`. Restart rescans with fresh counters and may duplicate accepted-but-unmoved mail. |
 | FR-19 | Support one active instance per upstream account with stop-before-start replacement. Returning processed messages to the source triggers submission; changing recipient applies to all source mail remaining at restart. |
-| FR-20 | Plan branch-push and PR CI with formatting, Clippy, locked tests, protocol/container checks, design/config checks, and image build/smoke. Branch/PR jobs are read-only and never publish or receive production credentials. |
-| FR-21 | Plan automatic GHCR publication after merge/main checks succeed. A single main-only job builds, smoke-tests, and publishes that same merged-SHA image directly, with commit tag, digest, OCI metadata, and current-main `latest`; no artifact transfer or automatic host deployment. |
+| FR-20 | Plan branch-push and PR CI with formatting, Clippy, locked tests, protocol/container checks, docs/config checks, and image build/smoke. Branch/PR jobs are read-only and never publish or receive production credentials. |
+| FR-21 | Plan automatic GHCR publication after merge/main checks succeed. A single main-only job builds, smoke-tests, and publishes that same merged-SHA image directly, with only current-main `:beta`, digest, and OCI metadata; `:latest` is deferred until after testing and SHA image tags are not used; no artifact transfer or automatic host deployment. |
 
 ## 2. Non-functional requirements
 
@@ -44,9 +44,9 @@ Status: agreed v1 scope; implementation and automated tests are planned. Require
 | NFR-10 | Fatal/threshold failures are visible through a stopped container, nonzero exit, and terminal log. Operators own alerting/restart; success in unrelated work must not mask repeated failures. |
 | NFR-11 | Deadlines/retries must progress during quiet IDLE and notification bursts. Bounded discovery and queued work must avoid starvation of retry/move/shutdown tasks. |
 | NFR-12 | Validate one selected provider and deployed Stalwart version before release. Keep protocol adapters isolated and pin implementation dependencies/toolchain/images; broad provider/auth/TLS variants are deferred. |
-| NFR-13 | Keep README deployment/options, architecture, requirement IDs, and planned tests consistent. Clearly distinguish planned artifacts from implemented features; workflow files remain deferred in this documentation task. |
+| NFR-13 | Keep README deployment/options, architecture, requirement IDs, and planned tests consistent. Clearly distinguish implemented artifacts from unexecuted release gates. |
 | NFR-14 | Automate deterministic protocol/fault/process tests and a 24h release-candidate soak with independent SMTP acceptance records. Required CI runs without live production mail credentials. |
-| NFR-15 | Releases trace to the checked merged SHA and the exact locally built/smoke-tested image. Package-write permission exists only in the main publication job; failed checks/smoke block push and obsolete runs cannot replace `latest`. |
+| NFR-15 | Releases trace to the checked merged SHA and the exact locally built/smoke-tested image. Package-write permission exists only in the main publication job; failed checks/smoke block push and obsolete runs cannot replace `:beta`. |
 
 ## 3. Acceptance and operational assumptions
 
