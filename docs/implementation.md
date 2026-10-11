@@ -1,6 +1,6 @@
 # Implementation and validation status
 
-Updated 10 October 2026. The [requirements](requirements.md) and [test plan](test-cases.md) remain the release contract; this file distinguishes implemented code from release validation.
+Updated 10 October 2026. The [requirements](../design/requirements.md) and [test plan](../design/test-cases.md) remain the release contract; this file distinguishes implemented code from release validation.
 
 ## Implemented artifacts
 

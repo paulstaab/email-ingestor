@@ -85,7 +85,7 @@ All application options use environment variables. There is no application confi
 
 Credential alternatives are `INGESTOR_IMAP_USERNAME_FILE`, `INGESTOR_IMAP_PASSWORD_FILE`, `INGESTOR_SMTP_USERNAME_FILE`, and `INGESTOR_SMTP_PASSWORD_FILE`. Set exactly one direct or file form per credential. Files contain UTF-8; remove one final newline without trimming other characters. Unknown `INGESTOR_` variables, empty required values, invalid numbers/log levels, and conflicting credential forms fail validation before connecting. Ports are 1–65535; message size is a positive integer. Secrets never belong in source control or logs.
 
-Streaming buffers, IDLE negotiation, timing, retry delays, queue bounds, and single-message concurrency are fixed implementation defaults, described in the [technology stack](docs/tech-stack.md#3-fixed-operational-defaults).
+Streaming buffers, IDLE negotiation, timing, retry delays, queue bounds, and single-message concurrency are fixed implementation defaults, described in the [technology stack](design/tech-stack.md#3-fixed-operational-defaults).
 
 ## Failure behavior
 
@@ -99,6 +99,6 @@ Monitor exit status and structured logs. The example leaves failures stopped and
 
 Use short-lived branches and reviewed PRs into protected `main`. Planned CI checks Rust formatting, Clippy, locked tests, protocol/container integration, and documentation/configuration consistency. Branch/PR image builds are smoke-tested without publishing.
 
-After a successful merge and main validation, one main-only job builds, smoke-tests, and publishes that same image directly to [GitHub Container Registry](https://github.com/paulstaab/email-ingestor/pkgs/container/email-ingestor). During testing, only `:beta` is published, with a recorded digest and OCI revision; `:latest` will be enabled after testing; host deployment remains operator-managed. Workflow definitions are present; validation on GitHub and the release gates remain outstanding; see the [workflow design](docs/tech-stack.md#5-github-actions-and-branch-workflow).
+After a successful merge and main validation, one main-only job builds, smoke-tests, and publishes that same image directly to [GitHub Container Registry](https://github.com/paulstaab/email-ingestor/pkgs/container/email-ingestor). During testing, only `:beta` is published, with a recorded digest and OCI revision; `:latest` will be enabled after testing; host deployment remains operator-managed. Workflow definitions are present; validation on GitHub and the release gates remain outstanding; see the [workflow design](design/tech-stack.md#5-github-actions-and-branch-workflow).
 
-See [architecture](docs/architecture.md), [requirements](docs/requirements.md), [acceptance test plan](docs/test-cases.md), and [technology stack](docs/tech-stack.md).
+See [architecture](design/architecture.md), [requirements](design/requirements.md), [acceptance test plan](design/test-cases.md), and [technology stack](design/tech-stack.md).
