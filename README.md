@@ -17,20 +17,23 @@ cargo test --locked
 python3 scripts/check_docs.py
 cargo build --locked --release
 python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --large --thresholds
+python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --plaintext --large --thresholds
+python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --plaintext --smtp-host ::1
 ```
 
-The Python harness requires Python 3 and OpenSSL. It creates temporary test certificates, runs disposable authenticated implicit-TLS peers, independently checks raw-byte SHA-256 digests and acceptance, and inspects process exits and logs. No live mail credentials are used. Large fixtures are generated in bounded chunks. To check the non-root container with a read-only root:
+The Python harness requires Python 3 and OpenSSL. It creates temporary test certificates, runs disposable authenticated TLS or loopback SMTP peers (IMAP always TLS), independently checks raw-byte SHA-256 digests and acceptance, and inspects process exits and logs. No live mail credentials are used. Large fixtures are generated in bounded chunks. To check the non-root container with a read-only root:
 
 ```sh
 docker build -t email-ingestor:local .
 python3 scripts/protocol_smoke.py --image email-ingestor:local
+python3 scripts/protocol_smoke.py --image email-ingestor:local --plaintext
 ```
 
 CI checks branches and PRs without publishing. Main checks gate a separate job that builds, smoke-tests, and pushes the same local image. Configure branch protection and GHCR access separately. Publication does not deploy the service.
 
 ## Deployment
 
-Run one instance per upstream account on the private server. V1 targets one provider validated before deployment; that provider must support native IMAP MOVE and password/app-password authentication. Both connections use implicit TLS, normally IMAPS port 993 and SMTP port 465. Configure a private authenticated Stalwart listener that accepts the configured recipient and forwarded envelope senders, with its message-size limit at least as large as the ingestor limit.
+Run one instance per upstream account on the private server. V1 targets one provider validated before deployment; that provider must support native IMAP MOVE and password/app-password authentication. IMAP always uses validated implicit TLS, normally port 993. SMTP defaults to validated implicit TLS on port 465; authenticated plaintext SMTP requires explicit loopback opt-in. Configure a private authenticated Stalwart listener that accepts the configured recipient and forwarded envelope senders, with its message-size limit at least as large as the ingestor limit.
 
 1. Find the provider's actual Trash folder path, or choose another existing writable folder. The destination must differ from the source. The ingestor does not discover or create folders; the provider's policy controls destination retention.
 2. Create a private environment file outside the repository, for example `/etc/email-ingestor.env`:
@@ -61,6 +64,25 @@ Run one instance per upstream account on the private server. V1 targets one prov
 
 The container runs as non-root and exposes no ports. Optional secret/CA file variables require read-only mounts at their container paths. Use an image digest to pin a specific build; private GHCR packages require login. To update configuration or the image, stop/remove the old container before starting its replacement.
 
+### Shared-pod loopback SMTP
+
+When Stalwart and the ingestor share a rootless Podman pod network namespace, explicitly configure authenticated plaintext SMTP:
+
+```dotenv
+INGESTOR_SMTP_SECURITY=plaintext-loopback
+INGESTOR_SMTP_HOST=127.0.0.1
+INGESTOR_SMTP_PORT=1465
+INGESTOR_SMTP_USERNAME=ingestor@mail.test
+INGESTOR_SMTP_PASSWORD=replace-with-app-password
+INGESTOR_SMTP_RECIPIENT=paul@mail.test
+```
+
+Keep the IMAP credentials and folder settings from the main example. Omit the SMTP CA variable entirely. Only literal IPv4 `127.0.0.0/8` and IPv6 `::1` are accepted; DNS names (including `localhost`), mapped IPv6, unspecified and non-loopback IPs are rejected before networking. Each connection uses the validated socket address without DNS and checks its peer before any SMTP exchange. EHLO and successful AUTH PLAIN are mandatory before MAIL FROM. This mode never negotiates STARTTLS or infers transport from a port. TLS mode never falls back to plaintext; IMAP remains TLS-only.
+
+Bind the Stalwart listener to pod loopback and explicitly advertise/accept AUTH on that plaintext listener. Loopback traffic stays within the network namespace; every pod member can reach the listener, so retain SMTP credentials. This mode does not protect against a compromised host. Preserve local-recipient restrictions and the listener-specific external-envelope-sender exception.
+
+After a tested beta image is published, record its revision and digest before removing ingestion certificate generation, SMTP certificate/CA mounts, the SMTP CA variable, and renewal instructions from the home-server integration. Retain the staged dry-run/deployment process and verify one disposable mailbox.org `Test` message reaches Stalwart and moves to `Test-Processed`. Do not enable production folders as part of this change.
+
 ## Configuration
 
 All application options use environment variables. There is no application configuration file or CLI override; Docker's `--env-file` injects environment values. Existing source mail is processed on startup regardless of read status or custom flags.
@@ -73,9 +95,10 @@ All application options use environment variables. There is no application confi
 | `INGESTOR_IMAP_MAILBOX` | `INBOX`; source folder |
 | `INGESTOR_IMAP_USERNAME` | Required upstream username, or its `_FILE` alternative |
 | `INGESTOR_IMAP_PASSWORD` | Required password/app password, or its `_FILE` alternative |
-| `INGESTOR_SMTP_HOST` | Required private SMTP hostname |
-| `INGESTOR_SMTP_PORT` | `465`; implicit TLS only |
-| `INGESTOR_SMTP_CA_FILE` | Optional mounted CA PEM path; otherwise public trust roots |
+| `INGESTOR_SMTP_SECURITY` | `implicit-tls` (default) or explicit `plaintext-loopback`; empty/unknown values rejected |
+| `INGESTOR_SMTP_HOST` | Required SMTP hostname in TLS mode; literal loopback IP in plaintext mode |
+| `INGESTOR_SMTP_PORT` | `465` in both modes; set the plaintext listener port explicitly |
+| `INGESTOR_SMTP_CA_FILE` | Optional mounted CA PEM path for implicit TLS; otherwise public roots. Forbidden in plaintext mode, even empty |
 | `INGESTOR_SMTP_USERNAME` | Required SMTP username, or its `_FILE` alternative |
 | `INGESTOR_SMTP_PASSWORD` | Required SMTP password, or its `_FILE` alternative |
 | `INGESTOR_SMTP_RECIPIENT` | Required single local envelope recipient |

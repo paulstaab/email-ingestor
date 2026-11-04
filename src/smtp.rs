@@ -1,6 +1,6 @@
 //! Streaming SMTP submission. Only finish() may emit the DATA terminator.
 use crate::{
-    config::Config,
+    config::{Config, SmtpSecurity, literal_loopback},
     envelope::{Framer, address},
     error::{Error, Result},
     wire::Wire,
@@ -9,6 +9,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 pub struct Smtp {
     wire: Wire,
+    authenticated: bool,
     eight_bit: bool,
     utf8: bool,
     size: Option<u64>,
@@ -19,6 +20,7 @@ impl Smtp {
     pub fn from_wire(wire: Wire) -> Self {
         Self {
             wire,
+            authenticated: false,
             eight_bit: false,
             utf8: false,
             size: None,
@@ -27,7 +29,40 @@ impl Smtp {
         }
     }
     pub async fn connect(config: &Config) -> Result<Self> {
-        let mut this = Self::from_wire(Wire::connect(&config.smtp, 60).await?);
+        let endpoint = &config.smtp;
+        let wire = match &endpoint.security {
+            SmtpSecurity::ImplicitTls(tls) => {
+                let tcp = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    tokio::net::TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
+                )
+                .await
+                .map_err(|_| Error::temporary("connection timeout"))?
+                .map_err(|_| Error::temporary("TCP connection failed"))?;
+                Wire::tls(tcp, &endpoint.host, tls.clone(), 60).await?
+            }
+            SmtpSecurity::PlaintextLoopback(ip) => {
+                if !literal_loopback(*ip) {
+                    return Err(Error::fatal("plaintext SMTP address is not loopback"));
+                }
+                // SocketAddr bypasses DNS on every connection, including retries.
+                let tcp = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    tokio::net::TcpStream::connect(std::net::SocketAddr::new(*ip, endpoint.port)),
+                )
+                .await
+                .map_err(|_| Error::temporary("connection timeout"))?
+                .map_err(|_| Error::temporary("TCP connection failed"))?;
+                let peer = tcp
+                    .peer_addr()
+                    .map_err(|_| Error::fatal("cannot validate SMTP peer"))?;
+                if !literal_loopback(peer.ip()) {
+                    return Err(Error::fatal("plaintext SMTP peer is not loopback"));
+                }
+                Wire::new(tcp)
+            }
+        };
+        let mut this = Self::from_wire(wire);
         this.setup(config).await?;
         Ok(this)
     }
@@ -76,6 +111,7 @@ impl Smtp {
         self.reply(codes, 300).await
     }
     pub async fn setup(&mut self, config: &Config) -> Result<()> {
+        self.authenticated = false;
         self.reply(&[220], 300).await?;
         let capabilities = self.command("EHLO email-ingestor.invalid", &[250]).await?;
         let mut plain = false;
@@ -112,6 +148,7 @@ impl Smtp {
         auth.extend_from_slice(config.smtp.password.as_bytes());
         self.command(&format!("AUTH PLAIN {}", STANDARD.encode(auth)), &[235])
             .await?;
+        self.authenticated = true;
         Ok(())
     }
     pub fn validate_headers(&self, prefix: &[u8]) -> Result<()> {
@@ -125,7 +162,10 @@ impl Smtp {
         Ok(())
     }
     pub async fn start(&mut self, sender: &str, recipient: &str, bytes: u64) -> Result<()> {
-        if self.framer.is_some() || (!sender.is_empty() && !address(sender)) || !address(recipient)
+        if !self.authenticated
+            || self.framer.is_some()
+            || (!sender.is_empty() && !address(sender))
+            || !address(recipient)
         {
             return Err(Error::fatal("invalid SMTP envelope or transaction state"));
         }

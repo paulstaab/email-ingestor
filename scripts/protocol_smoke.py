@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Disposable implicit-TLS peers with independent receipts; no production credentials.
+"""Disposable TLS IMAP and TLS/loopback SMTP peers with independent receipts; no production credentials.
 
 Run after cargo build: python3 scripts/protocol_smoke.py
 Use --large for an incrementally generated 250 MiB fixture, --image for container smoke.
 """
 import argparse
+import base64
 import contextlib
 import concurrent.futures
 import hashlib
@@ -157,20 +158,29 @@ class Scenario:
 
     def smtp(self, conn):
         with conn.makefile("rb", buffering=65536) as io:
+            authenticated = False
             conn.sendall(b"220 disposable SMTP\r\n")
             while not self.stop.is_set():
                 line = io.readline(4096)
                 if not line:
                     return
                 if line.startswith(b"EHLO "):
-                    conn.sendall(b"250-peer\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250 AUTH PLAIN\r\n")
+                    if self.mode == "missing_auth":
+                        conn.sendall(b"250-peer\r\n250 STARTTLS\r\n")
+                    else:
+                        conn.sendall(b"250-peer\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-STARTTLS\r\n250 AUTH PLAIN\r\n")
                 elif line.startswith(b"AUTH PLAIN "):
                     self.smtp_setups += 1
+                    if self.mode == "rejected_auth":
+                        conn.sendall(b"535 rejected " + line[len(b"AUTH PLAIN "):])
+                        return
                     if self.mode == "five_smtp_setup":
                         conn.sendall(b"454 temporary authentication failure\r\n")
                         return
                     conn.sendall(b"235 authenticated\r\n")
+                    authenticated = True
                 elif line.startswith(b"MAIL FROM:"):
+                    assert authenticated, "MAIL before successful AUTH"
                     expected = b"MAIL FROM:<>" if self.mode == "large" else b"MAIL FROM:<sender@example.test>"
                     assert line.startswith(expected), "incorrect reverse path"
                     conn.sendall(b"250 sender\r\n")
@@ -180,6 +190,7 @@ class Scenario:
                         return
                     conn.sendall(b"250 recipient\r\n")
                 elif line == b"DATA\r\n":
+                    assert authenticated, "DATA before successful AUTH"
                     conn.sendall(b"354 stream\r\n")
                     digest = hashlib.sha256()
                     count = 0
@@ -202,8 +213,11 @@ class Scenario:
                     assert digest.hexdigest() == self.expected_digest(), "original-byte digest mismatch"
                     with self.lock:
                         self.attempts += 1
-                        if self.mode != "five_submissions":
+                        if self.mode not in {"five_submissions", "final_rejection"}:
                             self.receipts.append((count, digest.hexdigest()))
+                    if self.mode == "final_rejection":
+                        conn.sendall(b"550 permanent final rejection\r\n")
+                        return
                     if self.mode == "five_submissions":
                         conn.sendall(b"450 final temporary rejection\r\n")
                         return
@@ -213,16 +227,16 @@ class Scenario:
                 else:
                     raise AssertionError("unexpected SMTP command")
 
-    def listen(self, tls, protocol):
-        listener = socket.socket()
-        listener.bind(("127.0.0.1", 0))
+    def listen(self, tls, protocol, host="127.0.0.1"):
+        listener = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+        listener.bind((host, 0))
         listener.listen()
         listener.settimeout(0.2)
         port = listener.getsockname()[1]
 
         def connection(raw):
             try:
-                with tls.wrap_socket(raw, server_side=True) as conn:
+                with (tls.wrap_socket(raw, server_side=True) if tls else raw) as conn:
                     conn.settimeout(15)
                     self.connections.append(conn)
                     protocol(conn)
@@ -257,7 +271,7 @@ def exercise(args, directory, tls, mode):
         assert (size - prefix - 2) % len(PATTERN) not in {15, 16}
     scenario = Scenario(mode, size)
     imap_port = scenario.listen(tls, scenario.imap)
-    smtp_port = scenario.listen(tls, scenario.smtp)
+    smtp_port = scenario.listen(None if args.plaintext else tls, scenario.smtp, args.smtp_host)
     env = {k: v for k, v in os.environ.items() if not k.startswith("INGESTOR_")}
     values = {
         "IMAP_HOST": "localhost", "IMAP_PORT": str(imap_port), "IMAP_CA_FILE": str(directory / "ca.pem"),
@@ -266,6 +280,18 @@ def exercise(args, directory, tls, mode):
         "SMTP_USERNAME": "private-user-fixture", "SMTP_PASSWORD": "private-password-fixture",
         "SMTP_RECIPIENT": "recipient@example.test", "DESTINATION_FOLDER": "Actual Trash",
     }
+    if args.plaintext:
+        values.pop("SMTP_CA_FILE")
+        values["SMTP_HOST"] = args.smtp_host
+        values["SMTP_SECURITY"] = "plaintext-loopback"
+    else:
+        values["SMTP_SECURITY"] = "implicit-tls"
+    if not args.plaintext and mode == "normal":
+        values.pop("SMTP_SECURITY")  # Exercise the implicit-TLS default on a real connection.
+    if mode == "smtp_invalid_tls":
+        values["SMTP_HOST"] = "127.0.0.1"
+    if mode == "untrusted_smtp":
+        values.pop("SMTP_CA_FILE")
     if mode == "oversized":
         values["MAX_MESSAGE_BYTES"] = "1"
     if mode == "invalid_tls":
@@ -273,12 +299,12 @@ def exercise(args, directory, tls, mode):
     env.update({"INGESTOR_" + k: v for k, v in values.items()})
     command = [args.binary]
     if args.image:
-        command = ["docker", "run", "--rm", "--network", "host", "--read-only", "--cap-drop", "ALL", "--memory", "512m", "-v", f"{directory}:{directory}:ro"]
+        command = ["docker", "run", "--rm", "--network", "host", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL", "--memory", "512m", "-v", f"{directory}:{directory}:ro"]
         for key, value in values.items():
             command += ["-e", f"INGESTOR_{key}={value}"]
         command += [args.image]
     threshold = mode.startswith("five_")
-    fatal = threshold or mode in {"permanent_rejection", "oversized", "wrong_uid", "inaccurate_size", "invalid_tls"}
+    fatal = threshold or mode in {"permanent_rejection", "oversized", "wrong_uid", "inaccurate_size", "invalid_tls", "smtp_invalid_tls", "untrusted_smtp", "missing_auth", "rejected_auth", "final_rejection"}
     peak_kib = 0
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
@@ -314,6 +340,10 @@ def exercise(args, directory, tls, mode):
             logs = output.read().decode()
             assert not scenario.errors, str(scenario.errors)
             assert code == (1 if fatal else 0), f"{mode}: exit {code}: {logs}"
+            selected_security = values.get("SMTP_SECURITY", "implicit-tls")
+            assert f'"smtp_security":"{selected_security}"' in logs
+            auth_payload = base64.b64encode(b"\0private-user-fixture\0private-password-fixture").decode()
+            assert auth_payload not in logs, "encoded AUTH in logs"
             for private in ["private-user-fixture", "private-password-fixture", "private-fixture", "sender@example.test", "recipient@example.test"]:
                 assert private not in logs, "private data in logs"
             for command in scenario.commands:
@@ -357,6 +387,8 @@ def main():
     parser.add_argument("--image")
     parser.add_argument("--large", action="store_true")
     parser.add_argument("--thresholds", action="store_true", help="exercise real fixed backoffs through fifth-failure exits (about 80s)")
+    parser.add_argument("--plaintext", action="store_true", help="authenticated loopback SMTP; IMAP remains TLS")
+    parser.add_argument("--smtp-host", default="127.0.0.1", choices=["127.0.0.1", "::1"])
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="ingestor-peers-") as temporary:
         directory = Path(temporary)
@@ -369,7 +401,9 @@ def main():
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(directory / "server.pem", directory / "server.key")
         modes = ["normal", "duplicate_content", "oversized", "wrong_uid", "inaccurate_size", "permanent_rejection", "invalid_tls", "incomplete_command", "lost_acceptance", "retry_move", "lost_move_reply"]
-        modes.append("generation_change")
+        modes += ["missing_auth", "rejected_auth", "final_rejection", "generation_change"]
+        if not args.plaintext:
+            modes += ["smtp_invalid_tls", "untrusted_smtp"]
         if not args.image:
             modes.append("restart_after_acceptance")
         if args.large:

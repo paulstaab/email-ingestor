@@ -29,4 +29,11 @@ for file in (root / ".github/workflows").glob("*.yml"):
         assert action.startswith("./") or re.search(r"@[a-f0-9]{40}$", action), f"unpinned action: {action}"
     assert "pull_request_target" not in text
 assert "Status:** architecture and scope only" not in readme
+for file in ["README.md", "design/requirements.md", "design/architecture.md", "design/tech-stack.md", "design/test-cases.md"]:
+    text = (root / file).read_text()
+    assert "plaintext-loopback" in text, f"missing SMTP security contract: {file}"
+    assert "implicit-tls" in text, f"missing default SMTP security: {file}"
+for file in [".github/workflows/ci.yml", ".github/workflows/release.yml"]:
+    text = (root / file).read_text()
+    assert "--plaintext" in text and "--image" in text, f"missing transport smoke: {file}"
 print("Documentation/configuration/build pins agree")

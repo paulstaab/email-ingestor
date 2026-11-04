@@ -35,6 +35,10 @@ async fn main() -> std::process::ExitCode {
         .with_env_filter(config.log_level.clone())
         .with_target(false)
         .init();
+    tracing::info!(
+        smtp_security = config.smtp.security.name(),
+        "SMTP security selected"
+    );
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
     let work = supervisor::run(config, receiver);
     tokio::pin!(work);
