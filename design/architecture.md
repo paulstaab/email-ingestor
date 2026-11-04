@@ -1,10 +1,10 @@
 # Email Ingestor: context and architecture
 
-Status: agreed v1 scope, updated 10 October 2026; core runtime is implemented, with release validation tracked in [implementation status](implementation.md). See [requirements](requirements.md), [test cases](test-cases.md), and [technology stack](tech-stack.md).
+Status: agreed v1 scope, updated 10 October 2026; core runtime is implemented, with release validation tracked in [implementation status](../docs/implementation.md). See [requirements](requirements.md), [test cases](test-cases.md), and [technology stack](tech-stack.md).
 
 ## 1. Context and boundary
 
-The publicly reachable provider accepts internet email while the private server is offline. A Rust container on the private server initiates an IMAP connection to that provider and authenticated SMTP to private Stalwart. Both connections use validated implicit TLS. Stalwart needs no public incoming SMTP port for this workflow.
+The publicly reachable provider accepts internet email while the private server is offline. A Rust container on the private server initiates an IMAP connection to that provider and authenticated SMTP to private Stalwart. IMAP uses validated implicit TLS. SMTP defaults to validated implicit TLS and permits explicit authenticated plaintext on literal loopback only. Stalwart needs no public incoming SMTP port for this workflow.
 
 The ingestor transfers original messages. Stalwart owns storage, client access, Sieve, spam filtering, and all decisions after SMTP acceptance. Final mailbox verification is a general non-goal: accepted messages can legitimately be routed, redirected, or discarded.
 
@@ -17,7 +17,7 @@ flowchart LR
         Ingestor[Rust container]
         Stalwart[Stalwart]
         Supervisor[Host supervision and logs]
-        Ingestor -->|Authenticated SMTP over implicit TLS| Stalwart
+        Ingestor -->|Authenticated SMTP over selected transport| Stalwart
         Ingestor -->|Exit status and structured logs| Supervisor
     end
     Ingestor -->|Outbound IMAP over implicit TLS| Provider
@@ -65,6 +65,14 @@ The destination is never an ingestion or cleanup source. Returning a processed m
 | Logging | Sanitized scan, attempt, acceptance, move, retry, and terminal events |
 
 These modules share one executable. Start by validating environment, connecting, checking MOVE support, and validating the explicit source and destination. Verify both are selectable, distinct, and not read-only; permission restrictions revealed by an actual move are failures rather than a reason to create or choose another folder. Select the source again before processing. Stop-before-start replacement is required; there is no distributed lock.
+
+### SMTP transport boundary
+
+Configuration represents SMTP security separately from the mandatory-TLS IMAP endpoint. `implicit-tls` is the default; `plaintext-loopback` validates a literal standard-library IP (IPv4 127/8 or IPv6 ::1 only), rejects any SMTP CA setting, and connects directly without DNS. Each connection/reconnect verifies the connected peer is loopback before protocol exchange. Empty/unknown modes and address/peer violations fail closed with sanitized fatal errors. Port 465 remains the default in either mode.
+
+One SMTP protocol implementation performs EHLO, requires AUTH PLAIN success before MAIL FROM, and streams over either transport. No STARTTLS, port-based selection, anonymous submission, TLS bypass, or fallback exists. Transport choice does not change deadlines, capabilities, bounded streaming, backpressure, acceptance/MOVE gates, retries, duplicate semantics, or shutdown. Startup logs identify the selected mode without credentials or payloads.
+
+For a shared Podman pod, loopback traffic stays within the network namespace and every pod member can reach the listener. Retain authentication, loopback binding, local-recipient restrictions, and the listener-specific external-envelope-sender exception. Plaintext mode does not protect against a compromised host. Remove home-server certificate provisioning/mounts/renewal only after a tested beta image is available with recorded revision/digest; retain staged deployment and the disposable Test-to-Test-Processed check without production folder expansion.
 
 ## 5. Processing and recovery
 

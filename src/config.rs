@@ -3,7 +3,7 @@ use crate::{
     error::{Error, Result},
 };
 use rustls::{ClientConfig, RootCertStore};
-use std::{collections::HashMap, fs, sync::Arc};
+use std::{collections::HashMap, fs, net::IpAddr, sync::Arc};
 
 pub struct Endpoint {
     pub host: String,
@@ -12,9 +12,35 @@ pub struct Endpoint {
     pub password: String,
     pub tls: Arc<ClientConfig>,
 }
+pub enum SmtpSecurity {
+    ImplicitTls(Arc<ClientConfig>),
+    PlaintextLoopback(IpAddr),
+}
+impl SmtpSecurity {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::ImplicitTls(_) => "implicit-tls",
+            Self::PlaintextLoopback(_) => "plaintext-loopback",
+        }
+    }
+}
+pub struct SmtpEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub security: SmtpSecurity,
+}
+/// Deliberately excludes IPv4-mapped IPv6, including mapped loopback.
+pub fn literal_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_loopback(),
+        IpAddr::V6(ip) => ip == std::net::Ipv6Addr::LOCALHOST,
+    }
+}
 pub struct Config {
     pub imap: Endpoint,
-    pub smtp: Endpoint,
+    pub smtp: SmtpEndpoint,
     pub source: String,
     pub destination: String,
     pub recipient: String,
@@ -30,6 +56,7 @@ const KEYS: &[&str] = &[
     "IMAP_USERNAME_FILE",
     "IMAP_PASSWORD",
     "IMAP_PASSWORD_FILE",
+    "SMTP_SECURITY",
     "SMTP_HOST",
     "SMTP_PORT",
     "SMTP_CA_FILE",
@@ -136,6 +163,46 @@ fn endpoint(env: &HashMap<String, String>, prefix: &str, default: u16) -> Result
         tls: tls(get(env, &format!("{prefix}_CA_FILE")))?,
     })
 }
+fn smtp_endpoint(env: &HashMap<String, String>) -> Result<SmtpEndpoint> {
+    let mode = get(env, "SMTP_SECURITY").unwrap_or("implicit-tls");
+    let security = match mode {
+        "implicit-tls" => SmtpSecurity::ImplicitTls(tls(get(env, "SMTP_CA_FILE"))?),
+        "plaintext-loopback" => {
+            if get(env, "SMTP_CA_FILE").is_some() {
+                return Err(Error::fatal(
+                    "plaintext SMTP conflicts with CA file setting",
+                ));
+            }
+            let ip = required(env, "SMTP_HOST")?
+                .parse::<IpAddr>()
+                .map_err(|_| Error::fatal("plaintext SMTP requires literal loopback IP"))?;
+            if !literal_loopback(ip) {
+                return Err(Error::fatal("plaintext SMTP requires literal loopback IP"));
+            }
+            SmtpSecurity::PlaintextLoopback(ip)
+        }
+        _ => return Err(Error::fatal("invalid SMTP security mode")),
+    };
+    let host = required(env, "SMTP_HOST")?;
+    text(&host)?;
+    if matches!(security, SmtpSecurity::ImplicitTls(_)) {
+        rustls::pki_types::ServerName::try_from(host.clone())
+            .map_err(|_| Error::fatal("invalid TLS hostname"))?;
+    }
+    let port = get(env, "SMTP_PORT")
+        .unwrap_or("465")
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or_else(|| Error::fatal("invalid port"))?;
+    Ok(SmtpEndpoint {
+        host,
+        port,
+        security,
+        username: credential(env, "SMTP_USERNAME")?,
+        password: credential(env, "SMTP_PASSWORD")?,
+    })
+}
 impl Config {
     pub fn from_env() -> Result<Self> {
         let mut values = HashMap::new();
@@ -183,7 +250,7 @@ impl Config {
         }
         Ok(Self {
             imap: endpoint(&env, "IMAP", 993)?,
-            smtp: endpoint(&env, "SMTP", 465)?,
+            smtp: smtp_endpoint(&env)?,
             source,
             destination,
             recipient,

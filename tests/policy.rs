@@ -163,3 +163,55 @@ fn independent_failure_streams_stop_at_five() {
     streak.success("fetch");
     assert_eq!(streak.failures(), 0);
 }
+
+#[test]
+fn smtp_security_contract() {
+    assert_eq!(
+        Config::parse(values()).unwrap().smtp.security.name(),
+        "implicit-tls"
+    );
+    for host in ["127.0.0.1", "127.255.1.2", "::1"] {
+        let mut env = values();
+        env.insert("INGESTOR_SMTP_SECURITY".into(), "plaintext-loopback".into());
+        env.insert("INGESTOR_SMTP_HOST".into(), host.into());
+        let config = Config::parse(env.clone()).unwrap();
+        assert_eq!(config.smtp.port, 465);
+        assert_eq!(config.smtp.security.name(), "plaintext-loopback");
+        for ca in ["", "/missing"] {
+            let mut conflicting = env.clone();
+            conflicting.insert("INGESTOR_SMTP_CA_FILE".into(), ca.into());
+            assert!(Config::parse(conflicting).is_err());
+        }
+        for key in ["SMTP_USERNAME", "SMTP_PASSWORD"] {
+            let mut missing = env.clone();
+            missing.remove(&format!("INGESTOR_{key}"));
+            assert!(Config::parse(missing).is_err());
+        }
+    }
+    for host in [
+        "localhost",
+        "smtp.example",
+        "0.0.0.0",
+        "::",
+        "192.168.1.1",
+        "::ffff:127.0.0.1",
+        "::ffff:7f00:1",
+        "[::1]",
+        "127.1",
+        "",
+        "::1%lo",
+    ] {
+        let mut env = values();
+        env.insert("INGESTOR_SMTP_SECURITY".into(), "plaintext-loopback".into());
+        env.insert("INGESTOR_SMTP_HOST".into(), host.into());
+        assert!(Config::parse(env).is_err(), "{host}");
+    }
+    for mode in ["", "plaintext", "IMPLICIT-TLS", "starttls", " implicit-tls"] {
+        let mut env = values();
+        env.insert("INGESTOR_SMTP_SECURITY".into(), mode.into());
+        assert!(Config::parse(env).is_err());
+    }
+    let mut env = values();
+    env.insert("INGESTOR_SMTP_SECURITY".into(), "implicit-tls".into());
+    assert!(Config::parse(env).is_ok());
+}

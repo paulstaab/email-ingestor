@@ -31,11 +31,19 @@ impl Wire {
         .await
         .map_err(|_| Error::temporary("connection timeout"))?
         .map_err(|_| Error::temporary("TCP connection failed"))?;
-        let name = rustls::pki_types::ServerName::try_from(endpoint.host.clone())
+        Self::tls(tcp, &endpoint.host, endpoint.tls.clone(), seconds).await
+    }
+    pub async fn tls(
+        tcp: TcpStream,
+        host: &str,
+        config: std::sync::Arc<rustls::ClientConfig>,
+        seconds: u64,
+    ) -> Result<Self> {
+        let name = rustls::pki_types::ServerName::try_from(host.to_owned())
             .map_err(|_| Error::fatal("invalid TLS hostname"))?;
         let tls = timeout(
             Duration::from_secs(seconds),
-            TlsConnector::from(endpoint.tls.clone()).connect(name, tcp),
+            TlsConnector::from(config).connect(name, tcp),
         )
         .await
         .map_err(|_| Error::temporary("TLS connection timeout"))?

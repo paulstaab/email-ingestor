@@ -36,10 +36,26 @@ fn scripted_wire(steps: Vec<(String, String)>) -> (Wire, tokio::task::JoinHandle
     (Wire::new(client), peer)
 }
 
+fn smtp_wire(mut steps: Vec<(String, String)>) -> (Wire, tokio::task::JoinHandle<()>) {
+    let mut setup = vec![
+        (String::new(), "220 ready\r\n".into()),
+        (
+            "EHLO email-ingestor.invalid\r\n".into(),
+            "250-peer\r\n250 AUTH PLAIN\r\n".into(),
+        ),
+        (
+            "AUTH PLAIN AHVzZXIAcGFzc3dvcmQ=\r\n".into(),
+            "235 authenticated\r\n".into(),
+        ),
+    ];
+    setup.append(&mut steps);
+    scripted_wire(setup)
+}
+
 #[tokio::test]
 async fn rcpt_accepts_all_standard_success_codes() {
     for code in [250, 251, 252] {
-        let (wire, peer) = scripted_wire(vec![
+        let (wire, peer) = smtp_wire(vec![
             (
                 "MAIL FROM:<sender@example.com>\r\n".into(),
                 "250 sender accepted\r\n".into(),
@@ -55,6 +71,7 @@ async fn rcpt_accepts_all_standard_success_codes() {
             (".\r\n".into(), "250 accepted\r\n".into()),
         ]);
         let mut smtp = Smtp::from_wire(wire);
+        smtp.setup(&config()).await.unwrap();
         smtp.start("sender@example.com", "recipient@example.com", 23)
             .await
             .unwrap();
@@ -66,7 +83,7 @@ async fn rcpt_accepts_all_standard_success_codes() {
 
 #[tokio::test]
 async fn bare_smtp_replies_complete_submission() {
-    let (wire, peer) = scripted_wire(vec![
+    let (wire, peer) = smtp_wire(vec![
         ("MAIL FROM:<>\r\n".into(), "250\r\n".into()),
         (
             "RCPT TO:<recipient@example.com>\r\n".into(),
@@ -77,6 +94,7 @@ async fn bare_smtp_replies_complete_submission() {
         (".\r\n".into(), "250-first line\r\n250\r\n".into()),
     ]);
     let mut smtp = Smtp::from_wire(wire);
+    smtp.setup(&config()).await.unwrap();
     smtp.start("", "recipient@example.com", 2).await.unwrap();
     smtp.write(b"\r\n").await.unwrap();
     smtp.finish().await.unwrap();
@@ -104,7 +122,7 @@ async fn imap_rev2_builtin_move_is_supported() {
 #[tokio::test]
 async fn rcpt_rejections_keep_their_failure_classification() {
     for (code, kind) in [(450, Kind::Temporary), (550, Kind::Fatal)] {
-        let (wire, peer) = scripted_wire(vec![
+        let (wire, peer) = smtp_wire(vec![
             ("MAIL FROM:<>\r\n".into(), "250 ok\r\n".into()),
             (
                 "RCPT TO:<recipient@example.com>\r\n".into(),
@@ -112,6 +130,7 @@ async fn rcpt_rejections_keep_their_failure_classification() {
             ),
         ]);
         let mut smtp = Smtp::from_wire(wire);
+        smtp.setup(&config()).await.unwrap();
         assert_eq!(
             smtp.start("", "recipient@example.com", 2)
                 .await
@@ -121,4 +140,23 @@ async fn rcpt_rejections_keep_their_failure_classification() {
         );
         peer.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn smtp_rejects_submission_before_authentication_without_writing() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let mut smtp = Smtp::from_wire(Wire::new(client));
+    assert_eq!(
+        smtp.start("", "recipient@example.com", 2)
+            .await
+            .unwrap_err()
+            .kind,
+        Kind::Fatal
+    );
+    drop(smtp);
+    let mut bytes = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut server, &mut bytes)
+        .await
+        .unwrap();
+    assert!(bytes.is_empty());
 }
