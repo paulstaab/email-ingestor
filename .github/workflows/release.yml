@@ -35,6 +35,8 @@ jobs:
             -t "${IMAGE}:beta" .
       - name: Smoke-test the same local image before login
         run: python3 scripts/protocol_smoke.py --image "${IMAGE}:beta"
+      - name: Read-only non-root loopback SMTP container smoke
+        run: python3 scripts/protocol_smoke.py --image "${IMAGE}:beta" --plaintext
       - name: Authenticate to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

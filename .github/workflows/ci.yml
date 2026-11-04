@@ -23,6 +23,15 @@ jobs:
       - run: cargo build --locked --release
       - name: TLS protocol faults and 250 MiB streaming
         run: python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --large --thresholds
+      - name: Authenticated plaintext SMTP faults and streaming
+        run: python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --large --thresholds --plaintext
+      - name: IPv6 loopback SMTP when supported
+        run: |
+          if python3 -c "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1', 0))"; then
+            python3 scripts/protocol_smoke.py --binary target/release/email-ingestor --plaintext --smtp-host ::1
+          else
+            echo "IPv6 loopback unavailable; skipped"
+          fi
   image:
     needs: checks
     runs-on: ubuntu-24.04
@@ -34,3 +43,5 @@ jobs:
         run: docker build --platform linux/amd64 -t email-ingestor:check .
       - name: Read-only non-root container TLS smoke
         run: python3 scripts/protocol_smoke.py --image email-ingestor:check
+      - name: Read-only non-root loopback SMTP container smoke
+        run: python3 scripts/protocol_smoke.py --image email-ingestor:check --plaintext

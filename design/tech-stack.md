@@ -1,6 +1,6 @@
 # Email Ingestor: technology stack
 
-Status: core Rust runtime and pinned dependencies are implemented; see [implementation status](implementation.md) for validation and remaining release gates. This scope uses IMAP-only durable state, one processing path, and fixed operational defaults. See [architecture](architecture.md), [requirements](requirements.md), and [test plan](test-cases.md).
+Status: core Rust runtime and pinned dependencies are implemented; see [implementation status](../docs/implementation.md) for validation and remaining release gates. This scope uses IMAP-only durable state, one processing path, and fixed operational defaults. See [architecture](architecture.md), [requirements](requirements.md), and [test plan](test-cases.md).
 
 ## 1. Implemented stack
 
@@ -27,7 +27,7 @@ No database/ORM, spool, message broker, persistent lock volume, HTTP server, met
 
 Before building the full supervisor, prove these adapter behaviors:
 
-1. Implicit TLS and password/app-password authentication against the selected provider and private Stalwart, including mounted private CA trust. No insecure or STARTTLS fallback. IMAPS 993 and submissions 465 are the normal defaults. [Implicit TLS guidance](https://www.rfc-editor.org/rfc/rfc8314.html#section-3)
+1. Implicit TLS and password/app-password authentication against the selected provider and private Stalwart, including mounted private CA trust. SMTP also supports explicit authenticated plaintext on validated literal loopback addresses and peers through the same streaming protocol implementation; IMAP remains mandatory TLS. No insecure or STARTTLS fallback. IMAPS 993 and submissions 465 are the normal defaults. [Implicit TLS guidance](https://www.rfc-editor.org/rfc/rfc8314.html#section-3)
 2. Stream complete PEEK retrieval without changing flags, using incremental literals or validated bounded partial ranges. Demonstrate a 250 MiB fixture without whole-message allocations, enforce actual-byte limits, and verify source completion before finalizing DATA. Oversize/truncation mid-stream must close SMTP without its terminator.
 3. Automatic IDLE detection, serialized DONE/completion, missed-notification reconciliation, deadline wakeups, reconnect, and polling fallback.
 4. Exact native UID MOVE to the explicit existing folder, including partial effects, lost replies, changed UIDVALIDITY, new target UIDs, and unrelated deletion flags. Never emulate with COPY/STORE/EXPUNGE. [MOVE specification](https://www.rfc-editor.org/rfc/rfc6851.html)
@@ -67,7 +67,7 @@ Use a multi-stage container build with a pinned stable Rust toolchain and minima
 
 IMAP retrieval and SMTP writing overlap during DATA; a slow but progressing 250 MiB transfer must not hit a timeout merely because the complete transaction exceeds 600 seconds. Use stage/progress deadlines, and suspend only upstream read deadlines deliberately blocked by downstream backpressure. The DATA-write timer applies to an active blocked write, not waiting for the next source chunk. Final-response timeout retains its separate uncertainty handling. [SMTP timeout guidance](https://www.rfc-editor.org/rfc/rfc5321.html#section-4.5.3.2)
 
-The [README configuration table](../README.md#configuration) defines every exposed setting and credential alternative. Unknown `INGESTOR_` settings are rejected; unrelated environment keys are ignored. The destination is a required exact folder path, not a mode or automatic special-use lookup. Ports may be changed for implicit-TLS listeners; changing them does not enable STARTTLS. Configuration takes effect by stop-before-start replacement.
+The [README configuration table](../README.md#configuration) defines every exposed setting and credential alternative. Unknown `INGESTOR_` settings are rejected; unrelated environment keys are ignored. The destination is a required exact folder path, not a mode or automatic special-use lookup. IMAP ports select implicit-TLS listeners only. SMTP security explicitly selects `implicit-tls` (default) or authenticated `plaintext-loopback`; both default to port 465. Plaintext requires literal IPv4 127/8 or IPv6 ::1, rejects SMTP CA settings, bypasses DNS and checks each connected peer. Changing ports never selects transport or enables STARTTLS. Configuration takes effect by stop-before-start replacement.
 
 ## 4. Tests and tooling
 
