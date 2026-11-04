@@ -74,6 +74,94 @@ fn status(line: &str) -> Result<()> {
         Err(Error::fatal("IMAP command rejected"))
     }
 }
+/// Expand only validated numeric UID windows, never a peer-controlled unbounded range.
+fn search_uids(values: &mut Vec<u32>, set: &str, first: u32, last: u32) -> Result<()> {
+    for item in set.split(',') {
+        let (start, end) = item.split_once(':').unwrap_or((item, item));
+        let parse = |value: &str| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+                .then(|| value.parse::<u32>().ok())
+                .flatten()
+                .filter(|uid| *uid >= first && *uid <= last)
+                .ok_or_else(|| Error::fatal("invalid or unbounded UID search"))
+        };
+        let start = parse(start)?;
+        let end = parse(end)?;
+        for uid in start.min(end)..=start.max(end) {
+            if values.len() >= BATCH as usize || values.contains(&uid) {
+                return Err(Error::fatal("invalid or unbounded UID search"));
+            }
+            values.push(uid);
+        }
+    }
+    Ok(())
+}
+
+fn esearch(line: &str, tag: &str, first: u32, last: u32) -> Result<Vec<u32>> {
+    let mut tail = line.trim();
+    if let Some(correlator) = tail.strip_prefix('(') {
+        let (correlator, rest) = correlator
+            .split_once(')')
+            .ok_or_else(|| Error::fatal("invalid ESEARCH correlator"))?;
+        let mut words = correlator.split_ascii_whitespace();
+        if !words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("TAG"))
+            || words.next() != Some(format!("\"{tag}\"").as_str())
+            || words.next().is_some()
+        {
+            return Err(Error::fatal("ESEARCH tag mismatch"));
+        }
+        tail = rest.trim_start();
+    }
+    let mut words = tail.split_ascii_whitespace();
+    if !words
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("UID"))
+    {
+        return Err(Error::fatal("ESEARCH UID indicator required"));
+    }
+    let mut values = Vec::new();
+    let mut seen = [false; 4];
+    let mut count = None;
+    while let Some(name) = words.next() {
+        let index = match name.to_ascii_uppercase().as_str() {
+            "ALL" => 0,
+            "MIN" => 1,
+            "MAX" => 2,
+            "COUNT" => 3,
+            _ => return Err(Error::fatal("unsupported ESEARCH result")),
+        };
+        if seen[index] {
+            return Err(Error::fatal("duplicate ESEARCH result"));
+        }
+        seen[index] = true;
+        let value = words
+            .next()
+            .ok_or_else(|| Error::fatal("missing ESEARCH value"))?;
+        if index == 0 {
+            search_uids(&mut values, value, first, last)?;
+        } else {
+            let value = value
+                .parse::<u32>()
+                .map_err(|_| Error::fatal("invalid ESEARCH value"))?;
+            if index == 3 {
+                count = Some(value);
+            } else if value < first || value > last {
+                return Err(Error::fatal("invalid or unbounded UID search"));
+            }
+        }
+    }
+    if count.is_some_and(|count| count as usize != values.len())
+        || (!seen[0] && (seen[1] || seen[2]))
+    {
+        return Err(Error::fatal("incomplete ESEARCH results"));
+    }
+    Ok(values)
+}
+
 impl Imap {
     pub fn from_wire(wire: Wire) -> Self {
         Self {
@@ -116,6 +204,9 @@ impl Imap {
         self.completion(&tag).await?;
         let tag = self.begin("CAPABILITY").await?;
         let mut move_supported = false;
+        let mut rev1 = false;
+        let mut rev2 = false;
+        let mut utf8_only = false;
         loop {
             let line = self.wire.line(60).await?;
             if self.finished(&line, &tag)? {
@@ -123,17 +214,21 @@ impl Imap {
             }
             if line.to_ascii_uppercase().starts_with("* CAPABILITY ") {
                 for capability in line.split_ascii_whitespace().skip(2) {
-                    // MOVE is part of the IMAP4rev2 base protocol.
-                    move_supported |= capability.eq_ignore_ascii_case("MOVE")
-                        || capability.eq_ignore_ascii_case("IMAP4REV2");
+                    rev1 |= capability.eq_ignore_ascii_case("IMAP4REV1");
+                    rev2 |= capability.eq_ignore_ascii_case("IMAP4REV2");
+                    move_supported |= capability.eq_ignore_ascii_case("MOVE");
                     self.idle |= capability.eq_ignore_ascii_case("IDLE");
-                    self.utf8_mailboxes |= capability.eq_ignore_ascii_case("IMAP4REV2")
-                        || capability.eq_ignore_ascii_case("UTF8=ONLY");
+                    utf8_only |= capability.eq_ignore_ascii_case("UTF8=ONLY");
                 }
             } else {
                 self.unsolicited(&line)?;
             }
         }
+        // Dual-revision servers retain rev1 behavior until ENABLE IMAP4rev2.
+        let rev2_active = rev2 && !rev1;
+        self.utf8_mailboxes = rev2_active || utf8_only;
+        self.idle |= rev2_active;
+        move_supported |= rev2_active;
         if !move_supported {
             return Err(Error::fatal("native IMAP MOVE required"));
         }
@@ -250,18 +345,18 @@ impl Imap {
                 }
                 seen = true;
                 for word in line.split_ascii_whitespace().skip(2) {
-                    let uid = word
-                        .parse::<u32>()
-                        .map_err(|_| Error::fatal("invalid search UID"))?;
-                    if uid < first
-                        || uid > last
-                        || values.len() >= BATCH as usize
-                        || values.contains(&uid)
-                    {
-                        return Err(Error::fatal("invalid or unbounded UID search"));
+                    // Legacy SEARCH contains individual numbers, never sequence sets.
+                    if word.contains([',', ':']) {
+                        return Err(Error::fatal("invalid search UID"));
                     }
-                    values.push(uid);
+                    search_uids(&mut values, word, first, last)?;
                 }
+            } else if upper == "* ESEARCH" || upper.starts_with("* ESEARCH ") {
+                if seen {
+                    return Err(Error::fatal("duplicate IMAP search response"));
+                }
+                seen = true;
+                values = esearch(&line[9..], &tag, first, last)?;
             } else {
                 self.unsolicited(&line)?;
             }
@@ -328,14 +423,20 @@ impl Imap {
                 if data.is_some() {
                     return Err(Error::fatal("repeated body FETCH"));
                 }
-                let (prefix, literal) = upper
-                    .rsplit_once(" {")
-                    .ok_or_else(|| Error::fatal("missing bounded body literal"))?;
-                let length = literal
-                    .strip_suffix('}')
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .filter(|n| *n <= CHUNK)
-                    .ok_or_else(|| Error::fatal("invalid or oversized body literal"))?;
+                let (prefix, length, inline_suffix) =
+                    if let Some((prefix, suffix)) = upper.split_once(" \"\"") {
+                        (prefix, 0, Some(suffix))
+                    } else {
+                        let (prefix, literal) = upper
+                            .rsplit_once(" {")
+                            .ok_or_else(|| Error::fatal("missing bounded body literal"))?;
+                        let length = literal
+                            .strip_suffix('}')
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .filter(|n| *n <= CHUNK)
+                            .ok_or_else(|| Error::fatal("invalid or oversized body literal"))?;
+                        (prefix, length, None)
+                    };
                 let body = format!("BODY[]<{offset}>");
                 let tokens: Vec<_> = prefix
                     .split(|c: char| c.is_ascii_whitespace() || c == '(' || c == ')')
@@ -350,7 +451,10 @@ impl Imap {
                     return Err(Error::fatal("body identity or partial offset mismatch"));
                 }
                 let bytes = self.wire.bytes(length, 60).await?;
-                let suffix = self.wire.line(60).await?;
+                let suffix = match inline_suffix {
+                    Some(suffix) => suffix.to_owned(),
+                    None => self.wire.line(60).await?,
+                };
                 let suffix_uid = suffix
                     .strip_prefix(" UID ")
                     .and_then(|s| s.strip_suffix(')'))
@@ -407,7 +511,7 @@ impl Imap {
 
 #[cfg(test)]
 mod tests {
-    use super::mailbox;
+    use super::{esearch, mailbox};
     #[test]
     fn international_folder_names_follow_negotiated_protocol() {
         assert_eq!(
@@ -416,5 +520,37 @@ mod tests {
         );
         assert_eq!(mailbox("Trash & Archive", false), "\"Trash &- Archive\"");
         assert_eq!(mailbox("台北", true), "\"台北\"");
+    }
+
+    #[test]
+    fn esearch_results_are_bounded_and_scoped_to_the_command() {
+        for (response, expected) in [
+            (
+                "(TAG \"I5\") UID ALL 99,9:7,2 COUNT 5",
+                vec![99, 7, 8, 9, 2],
+            ),
+            ("UID ALL 1:100", (1..=100).collect()),
+            ("(TAG \"I5\") UID", vec![]),
+            ("UID COUNT 0", vec![]),
+        ] {
+            assert_eq!(esearch(response, "I5", 1, 100).unwrap(), expected);
+        }
+        for response in [
+            "(TAG \"I6\") UID ALL 7",
+            "(TAG \"I5\") ALL 7",
+            "UID ALL 0",
+            "UID ALL 1:4294967295",
+            "UID ALL 1:*",
+            "UID ALL 1:100,1",
+            "UID ALL 7,7",
+            "UID ALL 7 ALL 8",
+            "UID ALL 7 COUNT 2",
+            "UID MIN 7",
+            "UID COUNT 1",
+            "UID ALL +7",
+            "UID ALL 1:",
+        ] {
+            assert!(esearch(response, "I5", 1, 100).is_err(), "{response}");
+        }
     }
 }
