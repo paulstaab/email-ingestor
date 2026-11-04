@@ -7,7 +7,7 @@ license = "MIT"
 description = "Bounded IMAP to SMTP forwarding with source-only recovery"
 
 [dependencies]
-tokio = { version = "=1.53.2", features = ["full", "test-util"] }
+tokio = { version = "=1.54.1", features = ["full", "test-util"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "=2.2.0"
