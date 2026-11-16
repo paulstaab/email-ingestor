@@ -11,7 +11,7 @@ tokio = { version = "=1.54.1", features = ["full", "test-util"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "=2.2.0"
-webpki-roots = "=1.0.11"
+webpki-roots = "=1.0.12"
 base64 = "=0.23.1"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["json", "env-filter"] }
